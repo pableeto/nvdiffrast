@@ -230,3 +230,22 @@ template<class T> static __device__ __forceinline__ void swap(T& a, T& b)       
 
 //------------------------------------------------------------------------
 #endif // __CUDACC__
+
+// See: https://github.com/NVlabs/nvdiffrast/issues/4
+#if __CUDA_ARCH__ < 700
+
+#define CA_TEMP       _ca_temp
+#define CA_TEMP_PARAM float CA_TEMP
+#define CA_DECLARE_TEMP(threads_per_block) CA_TEMP_PARAM
+#define CA_SET_GROUP_MASK(group, thread_mask)
+#define CA_SET_GROUP(group)
+#define caAtomicAdd(ptr, value) atomicAdd((ptr), (value))
+#define caAtomicAdd3_xyw(ptr, x, y, w)  \
+    do {                                \
+        atomicAdd((ptr), (x));          \
+        atomicAdd((ptr)+1, (y));        \
+        atomicAdd((ptr)+3, (w));        \
+    } while(0)
+#define caAtomicAddTexture(ptr, level, idx, value) atomicAdd((ptr)+(idx), (value))
+
+#endif
