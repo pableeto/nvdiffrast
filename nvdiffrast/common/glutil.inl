@@ -140,6 +140,7 @@ static void destroyGLContext(GLContext& glctx)
 #   include <GL/glew.h> // Use system-supplied glew.h
 #endif
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GL/gl.h>
 #include <cuda_gl_interop.h>
 
@@ -181,11 +182,37 @@ static void releaseGLContext(void)
         LOG(ERROR) << "eglMakeCurrent() failed when releasing GL context";
 }
 
-static GLContext createGLContext(void)
+static GLContext createGLContext(int requiredCudaDevice = 0)
 {
-    // Initialize.
+    // Load extensions
+    auto const eglQueryDevicesEXT = (PFNEGLQUERYDEVICESEXTPROC) eglGetProcAddress("eglQueryDevicesEXT");
+    auto const eglQueryDeviceAttribEXT = (PFNEGLQUERYDEVICEATTRIBEXTPROC) eglGetProcAddress("eglQueryDeviceAttribEXT");
+    auto const eglGetPlatformDisplayEXT = (PFNEGLGETPLATFORMDISPLAYEXTPROC) eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (!eglQueryDevicesEXT || !eglQueryDeviceAttribEXT || !eglGetPlatformDisplayEXT)
+        LOG(FATAL) << "extensions eglQueryDevicesEXT, eglQueryDeviceAttribEXT and eglGetPlatformDisplayEXT not available";
 
-    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    // Enumerate egl devices
+    constexpr int MAX_DEVICES = 16;
+    EGLDeviceEXT eglDevs[MAX_DEVICES];
+    EGLint numDevices;
+    if (!eglQueryDevicesEXT(MAX_DEVICES, eglDevs, &numDevices) || numDevices == 0)
+        LOG(FATAL) << "no egl devices found";
+
+    // Find which egl device matches the active cuda device, or use device zero by default (requiredCudaDevice == -1)
+    int eglDeviceIndex = 0;
+    for (; eglDeviceIndex < numDevices; ++eglDeviceIndex) {
+        EGLAttrib cudaDeviceId = -1;
+        eglQueryDeviceAttribEXT(eglDevs[eglDeviceIndex], EGL_CUDA_DEVICE_NV, &cudaDeviceId);
+        if (cudaDeviceId == requiredCudaDevice)
+            break;
+    }
+    if (eglDeviceIndex == numDevices)
+        LOG(FATAL) << "none of " << numDevices << " egl devices matches the active cuda device";
+    LOG(INFO) << "selected egl device #" << eglDeviceIndex << " to match cuda device #" << requiredCudaDevice << " for thread 0x" << std::hex << std::this_thread::get_id();
+
+    // Get and initialise pseudo-display backed by the selected device
+    EGLDisplay display = eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, eglDevs[eglDeviceIndex], 0);    
+
     if (display == EGL_NO_DISPLAY)
         LOG(ERROR) << "eglGetDisplay() failed";
 

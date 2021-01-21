@@ -39,7 +39,7 @@ OP_RETURN_TT        antialias_grad                      (torch::Tensor color, to
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // State classes.
-    pybind11::class_<RasterizeGLStateWrapper>(m, "RasterizeGLStateWrapper").def(pybind11::init<bool, bool>())
+    pybind11::class_<RasterizeGLStateWrapper>(m, "RasterizeGLStateWrapper").def(pybind11::init<bool, bool, int>())
         .def("set_context",     &RasterizeGLStateWrapper::setContext)
         .def("release_context", &RasterizeGLStateWrapper::releaseContext);
     pybind11::class_<TextureMipWrapper>(m, "TextureMipWrapper");

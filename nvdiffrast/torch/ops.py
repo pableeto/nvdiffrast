@@ -121,7 +121,7 @@ def set_log_level(level):
 #----------------------------------------------------------------------------
 
 class RasterizeGLContext:
-    def __init__(self, output_db=True, mode='automatic'):
+    def __init__(self, output_db=True, mode='automatic', device_id=0):
         '''Create a new OpenGL rasterizer context.
 
         Creating an OpenGL context is a slow operation so you should reuse the same
@@ -139,7 +139,8 @@ class RasterizeGLContext:
         assert mode in ['automatic', 'manual']
         self.output_db = output_db
         self.mode = mode
-        self.cpp_wrapper = _get_plugin().RasterizeGLStateWrapper(output_db, mode == 'automatic')
+        self.device_id = device_id
+        self.cpp_wrapper = _get_plugin().RasterizeGLStateWrapper(output_db, mode == 'automatic', device_id)
 
     def set_context(self):
         '''Set (activate) OpenGL context in the current CPU thread.

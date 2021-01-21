@@ -76,10 +76,10 @@ static void constructGLProgram(NVDR_CTX_ARGS, GLuint* pProgram, GLuint glVertexS
 //------------------------------------------------------------------------
 // Shared C++ functions.
 
-void rasterizeInitGLContext(NVDR_CTX_ARGS, RasterizeGLState& s)
+void rasterizeInitGLContext(NVDR_CTX_ARGS, RasterizeGLState& s, int cudaDeviceID)
 {
     // Create GL context and set it current.
-    s.glctx = createGLContext();
+    s.glctx = createGLContext(cudaDeviceID);
     setGLContext(s.glctx);
  
     // Version check.

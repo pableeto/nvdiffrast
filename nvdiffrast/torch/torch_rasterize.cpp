@@ -21,13 +21,13 @@ void RasterizeGradKernelDb(const RasterizeGradParams p);
 //------------------------------------------------------------------------
 // Python GL state wrapper methods.
 
-RasterizeGLStateWrapper::RasterizeGLStateWrapper(bool enableDB, bool automatic_)
+RasterizeGLStateWrapper::RasterizeGLStateWrapper(bool enableDB, bool automatic_, int cudaDeviceID)
 {
     pState = new RasterizeGLState();
     automatic = automatic_;
     memset(pState, 0, sizeof(RasterizeGLState));
     pState->enableDB = enableDB ? 1 : 0;
-    rasterizeInitGLContext(NVDR_CTX_PARAMS, *pState);
+    rasterizeInitGLContext(NVDR_CTX_PARAMS, *pState, cudaDeviceID);
     releaseGLContext();
 }
 

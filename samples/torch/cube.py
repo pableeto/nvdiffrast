@@ -73,7 +73,7 @@ def fit_cube(max_iter          = 5000,
     vtx_pos = torch.from_numpy(vtxp.astype(np.float32)).cuda()
     vtx_col = torch.from_numpy(vtxc.astype(np.float32)).cuda()
 
-    glctx = dr.RasterizeGLContext()
+    glctx = dr.RasterizeGLContext(device_id=0)
 
     # Repeats.
     for rep in range(repeats):
