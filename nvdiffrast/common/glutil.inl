@@ -37,26 +37,43 @@ struct GLContext
 static void setGLContext(GLContext& glctx)
 {
     if (!glctx.hglrc)
-        LOG(ERROR) << "setGLContext() called with null gltcx";
+        LOG(FATAL) << "setGLContext() called with null gltcx";
     if (!wglMakeCurrent(glctx.hdc, glctx.hglrc))
-        LOG(ERROR) << "wglMakeCurrent() failed when setting GL context";
+        LOG(FATAL) << "wglMakeCurrent() failed when setting GL context";
 
     if (glctx.glewInitialized)
         return;
     GLenum result = glewInit();
     if (result != GLEW_OK)
-        LOG(ERROR) << "glewInit() failed, return value = " << result;
+        LOG(FATAL) << "glewInit() failed, return value = " << result;
     glctx.glewInitialized = 1;
 }
 
 static void releaseGLContext(void)
 {
     if (!wglMakeCurrent(NULL, NULL))
-        LOG(ERROR) << "wglMakeCurrent() failed when releasing GL context";
+        LOG(FATAL) << "wglMakeCurrent() failed when releasing GL context";
 }
 
-static GLContext createGLContext(void)
+extern "C" int set_gpu(const char*);
+
+static GLContext createGLContext(int cudaDeviceIdx)
 {
+    if (cudaDeviceIdx >= 0)
+    {
+        char pciBusId[256] = "";
+        LOG(INFO) << "Creating GL context for Cuda device " << cudaDeviceIdx;
+        if (cudaDeviceGetPCIBusId(pciBusId, 255, cudaDeviceIdx) != CUDA_SUCCESS)
+        {
+            LOG(INFO) << "PCI bus id query failed";
+        }
+        else
+        {
+            int res = set_gpu(pciBusId);
+            LOG(INFO) << "Selecting device with PCI bus id " << pciBusId << " - " << (res ? "failed, expect crash or major slowdown" : "success");
+        }
+    }
+
     HINSTANCE hInstance = GetModuleHandle(NULL);
     WNDCLASS wc = {};
     wc.style         = CS_OWNDC;
@@ -101,7 +118,7 @@ static GLContext createGLContext(void)
 static void destroyGLContext(GLContext& glctx)
 {
     if (!glctx.hglrc)
-        LOG(ERROR) << "destroyGLContext() called with null gltcx";
+        LOG(FATAL) << "destroyGLContext() called with null gltcx";
 
     // If this is the current context, release it.
     if (wglGetCurrentContext() == glctx.hglrc)
@@ -109,13 +126,13 @@ static void destroyGLContext(GLContext& glctx)
 
     HWND hwnd = WindowFromDC(glctx.hdc);
     if (!hwnd)
-        LOG(ERROR) << "WindowFromDC() failed";
+        LOG(FATAL) << "WindowFromDC() failed";
     if (!ReleaseDC(hwnd, glctx.hdc))
-        LOG(ERROR) << "ReleaseDC() failed";
+        LOG(FATAL) << "ReleaseDC() failed";
     if (!wglDeleteContext(glctx.hglrc))
-        LOG(ERROR) << "wglDeleteContext() failed";
+        LOG(FATAL) << "wglDeleteContext() failed";
     if (!DestroyWindow(hwnd))
-        LOG(ERROR) << "DestroyWindow() failed";
+        LOG(FATAL) << "DestroyWindow() failed";
 
     LOG(INFO) << std::hex << std::setfill('0')
               << "WGL OpenGL context destroyed (hdc: 0x" << std::setw(8) << (uint32_t)(uintptr_t)glctx.hdc
@@ -149,7 +166,6 @@ static void destroyGLContext(GLContext& glctx)
 struct GLContext
 {
     EGLDisplay  display;
-    EGLSurface  surface;
     EGLContext  context;
     int         glewInitialized;
 };
@@ -159,9 +175,9 @@ struct GLContext
 static void setGLContext(GLContext& glctx)
 {
     if (!glctx.context)
-        LOG(ERROR) << "setGLContext() called with null gltcx";
+        LOG(FATAL) << "setGLContext() called with null gltcx";
 
-    if (!eglMakeCurrent(glctx.display, glctx.surface, glctx.surface, glctx.context))
+    if (!eglMakeCurrent(glctx.display, EGL_NO_SURFACE, EGL_NO_SURFACE, glctx.context))
         LOG(ERROR) << "eglMakeCurrent() failed when setting GL context";
 
     if (glctx.glewInitialized)
@@ -169,7 +185,7 @@ static void setGLContext(GLContext& glctx)
 
     GLenum result = glewInit();
     if (result != GLEW_OK)
-        LOG(ERROR) << "glewInit() failed, return value = " << result;
+        LOG(FATAL) << "glewInit() failed, return value = " << result;
     glctx.glewInitialized = 1;
 }
 
@@ -179,47 +195,83 @@ static void releaseGLContext(void)
     if (display == EGL_NO_DISPLAY)
         LOG(WARNING) << "releaseGLContext() called with no active display";
     if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT))
-        LOG(ERROR) << "eglMakeCurrent() failed when releasing GL context";
+        LOG(FATAL) << "eglMakeCurrent() failed when releasing GL context";
 }
 
-static GLContext createGLContext(int requiredCudaDevice = 0)
+static EGLDisplay getCudaDisplay(int cudaDeviceIdx)
 {
-    // Load extensions
-    auto const eglQueryDevicesEXT = (PFNEGLQUERYDEVICESEXTPROC) eglGetProcAddress("eglQueryDevicesEXT");
-    auto const eglQueryDeviceAttribEXT = (PFNEGLQUERYDEVICEATTRIBEXTPROC) eglGetProcAddress("eglQueryDeviceAttribEXT");
-    auto const eglGetPlatformDisplayEXT = (PFNEGLGETPLATFORMDISPLAYEXTPROC) eglGetProcAddress("eglGetPlatformDisplayEXT");
-    if (!eglQueryDevicesEXT || !eglQueryDeviceAttribEXT || !eglGetPlatformDisplayEXT)
-        LOG(FATAL) << "extensions eglQueryDevicesEXT, eglQueryDeviceAttribEXT and eglGetPlatformDisplayEXT not available";
+    typedef EGLBoolean (*eglQueryDevicesEXT_t)(EGLint, EGLDeviceEXT, EGLint*);
+    typedef EGLBoolean (*eglQueryDeviceAttribEXT_t)(EGLDeviceEXT, EGLint, EGLAttrib*);
+    typedef EGLDisplay (*eglGetPlatformDisplayEXT_t)(EGLenum, void*, const EGLint*);
 
-    // Enumerate egl devices
-    constexpr int MAX_DEVICES = 16;
-    EGLDeviceEXT eglDevs[MAX_DEVICES];
-    EGLint numDevices;
-    if (!eglQueryDevicesEXT(MAX_DEVICES, eglDevs, &numDevices) || numDevices == 0)
-        LOG(FATAL) << "no egl devices found";
-
-    // Find which egl device matches the active cuda device, or use device zero by default (requiredCudaDevice == -1)
-    int eglDeviceIndex = 0;
-    for (; eglDeviceIndex < numDevices; ++eglDeviceIndex) {
-        EGLAttrib cudaDeviceId = -1;
-        eglQueryDeviceAttribEXT(eglDevs[eglDeviceIndex], EGL_CUDA_DEVICE_NV, &cudaDeviceId);
-        if (cudaDeviceId == requiredCudaDevice)
-            break;
+    eglQueryDevicesEXT_t eglQueryDevicesEXT = (eglQueryDevicesEXT_t)eglGetProcAddress("eglQueryDevicesEXT");
+    if (!eglQueryDevicesEXT)
+    {
+        LOG(INFO) << "eglGetProcAddress(\"eglQueryDevicesEXT\") failed";
+        return 0;
     }
-    if (eglDeviceIndex == numDevices)
-        LOG(FATAL) << "none of " << numDevices << " egl devices matches the active cuda device";
-    LOG(INFO) << "selected egl device #" << eglDeviceIndex << " to match cuda device #" << requiredCudaDevice << " for thread 0x" << std::hex << std::this_thread::get_id();
 
-    // Get and initialise pseudo-display backed by the selected device
-    EGLDisplay display = eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, eglDevs[eglDeviceIndex], 0);    
+    eglQueryDeviceAttribEXT_t eglQueryDeviceAttribEXT = (eglQueryDeviceAttribEXT_t)eglGetProcAddress("eglQueryDeviceAttribEXT");
+    if (!eglQueryDeviceAttribEXT)
+    {
+        LOG(INFO) << "eglGetProcAddress(\"eglQueryDeviceAttribEXT\") failed";
+        return 0;
+    }
 
-    if (display == EGL_NO_DISPLAY)
-        LOG(ERROR) << "eglGetDisplay() failed";
+    eglGetPlatformDisplayEXT_t eglGetPlatformDisplayEXT = (eglGetPlatformDisplayEXT_t)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (!eglGetPlatformDisplayEXT)
+    {
+        LOG(INFO) << "eglGetProcAddress(\"eglGetPlatformDisplayEXT\") failed";
+        return 0;
+    }
+
+    int num_devices = 0;
+    eglQueryDevicesEXT(0, 0, &num_devices);
+    if (!num_devices)
+        return 0;
+    
+    EGLDisplay display = 0;
+    EGLDeviceEXT* devices = (EGLDeviceEXT*)malloc(num_devices * sizeof(void*));
+    eglQueryDevicesEXT(num_devices, devices, &num_devices);
+    for (int i=0; i < num_devices; i++)
+    {
+        EGLDeviceEXT device = devices[i]; 
+        intptr_t value = -1;
+        if (eglQueryDeviceAttribEXT(device, EGL_CUDA_DEVICE_NV, &value) && value == cudaDeviceIdx)
+        {
+            display = eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, device, 0);
+            break;
+        }
+    }
+
+    free(devices);
+    return display;
+}
+
+static GLContext createGLContext(int cudaDeviceIdx)
+{
+    EGLDisplay display = 0;
+
+    if (cudaDeviceIdx >= 0)
+    {
+        char pciBusId[256] = "";
+        LOG(INFO) << "Creating GL context for Cuda device " << cudaDeviceIdx;
+        display = getCudaDisplay(cudaDeviceIdx);
+        if (!display)
+            LOG(INFO) << "Failed, falling back to default display";
+    }
+
+    if (!display)  
+    {
+        display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (display == EGL_NO_DISPLAY)
+            LOG(FATAL) << "eglGetDisplay() failed";
+    }
 
     EGLint major;
     EGLint minor;
     if (!eglInitialize(display, &major, &minor))
-        LOG(ERROR) << "eglInitialize() failed";
+        LOG(FATAL) << "eglInitialize() failed";
 
     // Choose configuration.
 
@@ -238,45 +290,32 @@ static GLContext createGLContext(int requiredCudaDevice = 0)
     EGLConfig config;
     EGLint num_config;
     if (!eglChooseConfig(display, context_attribs, &config, 1, &num_config))
-        LOG(ERROR) << "eglChooseConfig() failed";
-
-    // Create dummy pbuffer surface.
-
-    const EGLint surface_attribs[] = {
-        EGL_WIDTH,      1,
-        EGL_HEIGHT,     1,
-        EGL_NONE
-    };
-
-    EGLSurface surface = eglCreatePbufferSurface(display, config, surface_attribs);
-    if (surface == EGL_NO_SURFACE)
-        LOG(ERROR) << "eglCreatePbufferSurface() failed";
+        LOG(FATAL) << "eglChooseConfig() failed";
 
     // Create GL context.
 
     if (!eglBindAPI(EGL_OPENGL_API))
-        LOG(ERROR) << "eglBindAPI() failed";
+        LOG(FATAL) << "eglBindAPI() failed";
 
     EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, NULL);
     if (context == EGL_NO_CONTEXT)
-        LOG(ERROR) << "eglCreateContext() failed";
+        LOG(FATAL) << "eglCreateContext() failed";
 
     // Done.
 
     LOG(INFO) << "EGL " << (int)minor << "." << (int)major << " OpenGL context created (disp: 0x"
               << std::hex << std::setfill('0')
               << std::setw(16) << (uintptr_t)display
-              << ", surf: 0x" << std::setw(16) << (uintptr_t)surface
               << ", ctx: 0x" << std::setw(16) << (uintptr_t)context << ")";
 
-    GLContext glctx = {display, surface, context, 0};
+    GLContext glctx = {display, context, 0};
     return glctx;
 }
 
 static void destroyGLContext(GLContext& glctx)
 {
     if (!glctx.context)
-        LOG(ERROR) << "destroyGLContext() called with null gltcx";
+        LOG(FATAL) << "destroyGLContext() called with null gltcx";
 
     // If this is the current context, release it.
     if (eglGetCurrentContext() == glctx.context)
@@ -284,13 +323,10 @@ static void destroyGLContext(GLContext& glctx)
 
     if (!eglDestroyContext(glctx.display, glctx.context))
         LOG(ERROR) << "eglDestroyContext() failed";
-    if (!eglDestroySurface(glctx.display, glctx.surface))
-        LOG(ERROR) << "eglDestroySurface() failed";
 
     LOG(INFO) << "EGL OpenGL context destroyed (disp: 0x"
               << std::hex << std::setfill('0')
               << std::setw(16) << (uintptr_t)glctx.display
-              << ", surf: 0x" << std::setw(16) << (uintptr_t)glctx.surface
               << ", ctx: 0x" << std::setw(16) << (uintptr_t)glctx.context << ")";
 
     memset(&glctx, 0, sizeof(GLContext));

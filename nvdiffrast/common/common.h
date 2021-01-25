@@ -185,6 +185,8 @@ template<class T> static __device__ __forceinline__ void swap(T& a, T& b)       
 //------------------------------------------------------------------------
 // Coalesced atomics. These are all done via macros.
 
+#if __CUDA_ARCH__ >= 700 // Warp match instruction __match_any_sync() is only available on compute capability 7.x and higher
+
 #define CA_TEMP       _ca_temp
 #define CA_TEMP_PARAM float* CA_TEMP
 #define CA_DECLARE_TEMP(threads_per_block) \
@@ -229,12 +231,10 @@ template<class T> static __device__ __forceinline__ void swap(T& a, T& b)       
     } while(0)
 
 //------------------------------------------------------------------------
-#endif // __CUDACC__
+// Disable atomic coalescing for compute capability lower than 7.x
 
-// See: https://github.com/NVlabs/nvdiffrast/issues/4
-#if __CUDA_ARCH__ < 700
-
-#define CA_TEMP       _ca_temp
+#else // __CUDA_ARCH__ >= 700
+#define CA_TEMP _ca_temp
 #define CA_TEMP_PARAM float CA_TEMP
 #define CA_DECLARE_TEMP(threads_per_block) CA_TEMP_PARAM
 #define CA_SET_GROUP_MASK(group, thread_mask)
@@ -247,5 +247,7 @@ template<class T> static __device__ __forceinline__ void swap(T& a, T& b)       
         atomicAdd((ptr)+3, (w));        \
     } while(0)
 #define caAtomicAddTexture(ptr, level, idx, value) atomicAdd((ptr)+(idx), (value))
+#endif // __CUDA_ARCH__ >= 700
 
-#endif
+//------------------------------------------------------------------------
+#endif // __CUDACC__
